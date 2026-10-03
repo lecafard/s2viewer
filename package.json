@@ -11,14 +11,7 @@
   },
   "keywords": [],
   "author": "",
-  "license": "ISC",
-  "devEngines": {
-    "packageManager": {
-      "name": "pnpm",
-      "version": "^11.21.0",
-      "onFail": "download"
-    }
-  },
+  "license": "MIT",
   "type": "module",
   "dependencies": {
     "maplibre-gl": "^6.11.2",
