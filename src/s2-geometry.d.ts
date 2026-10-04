@@ -3,5 +3,6 @@ declare module 's2-geometry' {
     latLngToKey(lat: number, lng: number, level: number): string;
     keyToId(key: string): string;
     keyToLatLng(key: string): { lat: number; lng: number };
+    idToKey(id: string): string;
   };
 }

@@ -8,6 +8,10 @@
   let map: MapLibreMap | undefined;
   let basemap = 'light';
   let mobilePanelOpen = false;
+  let mobileSearchOpen = false;
+  let searchQuery = '';
+  let searchError = '';
+  let copiedCellId = false;
   let zoom = 1.15;
   let activeLevels = visibleLevels(zoom);
   let hoveredCell = '';
@@ -22,12 +26,151 @@
     lng: number;
   } | null = null;
 
+  const coordinateSearchZoom = 10;
+  const rootFaceCenters = [
+    { lat: 0, lng: 0 },
+    { lat: 0, lng: 90 },
+    { lat: 90, lng: 0 },
+    { lat: 0, lng: 180 },
+    { lat: 0, lng: -90 },
+    { lat: -90, lng: 0 },
+  ];
+
   const colors = ['#f06d43', '#e0a034', '#389887', '#5274c8', '#9864bd', '#c35c79'];
   const cellCounts = (level: number) => (6n * 4n ** BigInt(level)).toLocaleString('en-US');
   const protomapsApiKey = import.meta.env.VITE_PROTOMAPS_API_KEY?.trim();
   const styleUrl = () => protomapsApiKey
     ? `https://api.protomaps.com/styles/v5/${basemap}/en.json?key=${encodeURIComponent(protomapsApiKey)}`
     : `https://tiles.openfreemap.org/styles/${basemap === 'dark' ? 'dark' : 'positron'}`;
+
+  function cellDetailsFromKey(key: string) {
+    const match = /^([0-5])\/([0-3]{0,30})$/.exec(key);
+    if (!match) throw new Error('Invalid S2 cell key');
+    const face = Number(match[1]);
+    const position = match[2];
+    const level = position.length;
+    const id = level === 0
+      ? ((BigInt(face) << 61n) | (1n << 60n)).toString()
+      : S2.keyToId(key);
+    const center = level === 0 ? rootFaceCenters[face] : S2.keyToLatLng(key);
+    return { key, id, level, face, center };
+  }
+
+  function cellDetailsFromId(id: bigint) {
+    if (id <= 0n || id > (1n << 64n) - 1n) throw new Error('Invalid S2 cell ID');
+    let leastSignificantBit = 0;
+    while ((id & (1n << BigInt(leastSignificantBit))) === 0n && leastSignificantBit < 64) {
+      leastSignificantBit += 1;
+    }
+    if (leastSignificantBit > 60 || leastSignificantBit % 2 !== 0) {
+      throw new Error('Invalid S2 cell ID');
+    }
+
+    const face = Number(id >> 61n);
+    if (face > 5) throw new Error('Invalid S2 cell ID');
+    const level = 30 - leastSignificantBit / 2;
+    const key = level === 0 ? `${face}/` : S2.idToKey(id.toString());
+    const details = cellDetailsFromKey(key);
+    if (BigInt(details.id) !== id) throw new Error('Invalid S2 cell ID');
+    return details;
+  }
+
+  function parseSearchQuery(value: string) {
+    const query = value.trim();
+    if (/^[0-5]\/[0-3]{0,30}$/.test(query)) {
+      return { type: 'cell' as const, cell: cellDetailsFromKey(query) };
+    }
+
+    if (/^\d+$/.test(query)) {
+      return { type: 'cell' as const, cell: cellDetailsFromId(BigInt(query)) };
+    }
+
+    if (/^0x[\da-f]{1,16}$/i.test(query)) {
+      return { type: 'cell' as const, cell: cellDetailsFromId(BigInt(query)) };
+    }
+
+    if (/^[\da-f]{1,16}$/i.test(query) && /[a-f]/i.test(query)) {
+      return { type: 'cell' as const, cell: cellDetailsFromId(BigInt(`0x${query.padEnd(16, '0')}`)) };
+    }
+
+    const coordinates = query.replace(/^\(|\)$/g, '').match(/^(-?(?:\d+\.?\d*|\.\d+))\s*(?:,|\/|\s)\s*(-?(?:\d+\.?\d*|\.\d+))$/);
+    if (!coordinates) throw new Error('Enter an S2 ID, S2 key, or latitude and longitude');
+    const lat = Number(coordinates[1]);
+    const lng = Number(coordinates[2]);
+    if (lat < -90 || lat > 90 || lng < -180 || lng > 180) {
+      throw new Error('Latitude must be -90 to 90 and longitude -180 to 180');
+    }
+    return { type: 'coordinates' as const, lat, lng };
+  }
+
+  function applySearchQuery(value: string, updateHash = true) {
+    try {
+      const result = parseSearchQuery(value);
+      searchError = '';
+      searchQuery = value;
+
+      if (result.type === 'cell') {
+        const { center, level } = result.cell;
+        setSelectedCell(center.lat, center.lng, level);
+        const firstLevel = Math.max(0, level - (VISIBLE_LEVEL_COUNT - 1));
+        map?.easeTo({
+          center: [center.lng, center.lat],
+          zoom: Math.min(20, zoomForFirstVisibleLevel(firstLevel)),
+          duration: 650,
+        });
+      } else {
+        const level = visibleLevels(coordinateSearchZoom).at(-1)!;
+        setSelectedCell(result.lat, result.lng, level);
+        map?.easeTo({ center: [result.lng, result.lat], zoom: coordinateSearchZoom, duration: 650 });
+      }
+
+      if (updateHash) {
+        const hash = `#${new URLSearchParams({ q: value }).toString()}`;
+        history.pushState(null, '', `${location.pathname}${location.search}${hash}`);
+      }
+      mobileSearchOpen = false;
+    } catch (error) {
+      searchError = error instanceof Error ? error.message : 'Invalid search';
+    }
+  }
+
+  function handleSearchSubmit(event: SubmitEvent) {
+    event.preventDefault();
+    applySearchQuery(searchQuery);
+  }
+
+  function readSearchFromHash() {
+    const query = new URLSearchParams(location.hash.slice(1)).get('q');
+    if (query) {
+      searchQuery = query;
+      applySearchQuery(query, false);
+    } else {
+      searchQuery = '';
+      searchError = '';
+      clearSelectedCell();
+    }
+  }
+
+  async function copyCellId() {
+    if (!selectedCell) return;
+    try {
+      await navigator.clipboard.writeText(selectedCell.id);
+      copiedCellId = true;
+      window.setTimeout(() => (copiedCellId = false), 1400);
+    } catch {
+      copiedCellId = false;
+    }
+  }
+
+  function toggleMobilePanel() {
+    mobilePanelOpen = !mobilePanelOpen;
+    if (mobilePanelOpen) mobileSearchOpen = false;
+  }
+
+  function toggleMobileSearch() {
+    mobileSearchOpen = !mobileSearchOpen;
+    if (mobileSearchOpen) mobilePanelOpen = false;
+  }
 
   function syncGrid() {
     if (!map?.getSource('s2-grid')) return;
@@ -93,16 +236,13 @@
 
   function setSelectedCell(lat: number, lng: number, level: number) {
     const key = S2.latLngToKey(lat, lng, level);
-    const [face] = key.split('/');
+    const details = cellDetailsFromKey(key);
     selectedCell = {
-      key,
-      id: S2.keyToId(key),
-      level,
-      face: Number(face),
-      center: S2.keyToLatLng(key),
+      ...details,
       lat,
       lng,
     };
+    copiedCellId = false;
     updateSelectedCellOverlay();
   }
 
@@ -196,7 +336,15 @@
       cursorPosition = '';
     });
 
-    return () => map?.remove();
+    window.addEventListener('popstate', readSearchFromHash);
+    window.addEventListener('hashchange', readSearchFromHash);
+    if (location.hash) readSearchFromHash();
+
+    return () => {
+      window.removeEventListener('popstate', readSearchFromHash);
+      window.removeEventListener('hashchange', readSearchFromHash);
+      map?.remove();
+    };
   });
 </script>
 
@@ -210,11 +358,41 @@
 
   <header class="topbar">
     <div class="brand-name">S2 Grid Viewer</div>
+    <form
+      id="location-search"
+      class="location-search"
+      class:mobile-search-open={mobileSearchOpen}
+      onsubmit={handleSearchSubmit}
+    >
+      <input
+        bind:value={searchQuery}
+        oninput={() => (searchError = '')}
+        aria-label="S2 cell ID, S2 key, or latitude and longitude"
+        placeholder="S2 cell ID, S2 key, or lat, lon"
+        spellcheck="false"
+      />
+      <button type="submit" aria-label="Search">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6.8"/><path d="m16 16 4.3 4.3"/></svg>
+      </button>
+      {#if searchError}
+        <div class="search-error" role="alert">{searchError}</div>
+      {/if}
+    </form>
     <div class="top-actions">
+      <button
+        class="mobile-search-toggle"
+        class:search-open={mobileSearchOpen}
+        onclick={toggleMobileSearch}
+        aria-expanded={mobileSearchOpen}
+        aria-controls="location-search"
+        aria-label={mobileSearchOpen ? 'Close search' : 'Open search'}
+      >
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6.8"/><path d="m16 16 4.3 4.3"/></svg>
+      </button>
       <button
         class="mobile-panel-toggle"
         class:panel-open={mobilePanelOpen}
-        onclick={() => (mobilePanelOpen = !mobilePanelOpen)}
+        onclick={toggleMobilePanel}
         aria-expanded={mobilePanelOpen}
         aria-controls="grid-panel"
       >
@@ -260,6 +438,7 @@
             {#if selectedCell.level > 0}
               <button class="parent-cell-button" onclick={selectParentCell}>Parent cell</button>
             {/if}
+            <button class="copy-cell-id-button" onclick={copyCellId}>{copiedCellId ? 'Copied' : 'Copy ID'}</button>
             <button class="clear-cell-button" onclick={clearSelectedCell} aria-label="Clear selected cell">×</button>
           </div>
         </div>
@@ -275,11 +454,6 @@
         <div class="selected-cell-id"><span>CELL ID</span><strong>{selectedCell.id}</strong></div>
       </section>
     {/if}
-
-    <div class="zoom-nudge">
-      <span class="nudge-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6.8"/><path d="m16 16 4.3 4.3M10.8 7.5v6.6M7.5 10.8h6.6"/></svg></span>
-      <span><strong>Scroll to zoom</strong><small>Finer levels appear as you zoom in</small></span>
-    </div>
 
     <div class="panel-footer">
       <a href="https://s2geometry.io/" target="_blank" rel="noreferrer">S2 DOCUMENTATION <span>↗</span></a>
