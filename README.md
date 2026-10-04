@@ -46,3 +46,7 @@ Use `pnpm run preview` to build and test the production output locally with the 
 Change `VISIBLE_LEVEL_COUNT` in `src/lib/s2.ts` to set how many grid levels are shown at once. Use a value from 1 to 31.
 
 Search accepts a decimal S2 ID, a compact S2 token (hex with trailing zeroes omitted and no `0x`), a `0x`-prefixed hexadecimal ID, an S2 key such as `4/001`, or a latitude/longitude pair such as `37.77, -122.42`. Prefix decimal IDs of 16 digits or fewer with `id:` to distinguish them from numeric-only S2 tokens. Searches are stored in the URL hash for sharing.
+
+
+## AI Disclaimer
+Built with the assistance of AI coding models.
