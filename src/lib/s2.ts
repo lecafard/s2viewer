@@ -2,6 +2,9 @@ import type { Map as MapLibreMap } from 'maplibre-gl';
 
 export const VISIBLE_LEVEL_COUNT = 4;
 const ZOOM_STEPS_PER_LEVEL = 1.15;
+// MapLibre's GeoJSON source tiles use Web Mercator, whose valid latitude range
+// ends here. Clipping before tiling avoids collapsing polar lines into loops.
+const MAX_GRID_LATITUDE = 85.05112878;
 
 export type Position = [number, number];
 export type LineFeature = {
@@ -65,6 +68,57 @@ function splitAtDateline(points: Position[]): Position[][] {
   return segments;
 }
 
+function clipAtMercatorLatitude(points: Position[]): Position[][] {
+  const segments: Position[][] = [];
+  let current: Position[] = [];
+  const finish = () => {
+    if (current.length > 1) segments.push(current);
+    current = [];
+  };
+
+  for (let i = 1; i < points.length; i += 1) {
+    const previous = points[i - 1];
+    const next = points[i];
+    const latitudeDelta = next[1] - previous[1];
+    let start = 0;
+    let end = 1;
+
+    if (latitudeDelta === 0) {
+      if (Math.abs(previous[1]) > MAX_GRID_LATITUDE) {
+        finish();
+        continue;
+      }
+    } else {
+      const lower = (-MAX_GRID_LATITUDE - previous[1]) / latitudeDelta;
+      const upper = (MAX_GRID_LATITUDE - previous[1]) / latitudeDelta;
+      start = Math.max(0, Math.min(lower, upper));
+      end = Math.min(1, Math.max(lower, upper));
+      if (start > end || end < 0 || start > 1) {
+        finish();
+        continue;
+      }
+      start = Math.max(0, start);
+      end = Math.min(1, end);
+    }
+
+    const pointAt = (t: number): Position => [
+      previous[0] + (next[0] - previous[0]) * t,
+      previous[1] + latitudeDelta * t,
+    ];
+    const clippedStart = pointAt(start);
+    const clippedEnd = pointAt(end);
+    if (start > 0 || current.length === 0) {
+      finish();
+      current = [clippedStart];
+    }
+    current.push(clippedEnd);
+    if (end < 1) finish();
+  }
+
+  finish();
+  return segments;
+}
+
 function edgePoints(face: number, start: [number, number], end: [number, number], samples = 4): Position[] {
   const points: Position[] = [];
   for (let step = 0; step <= samples; step += 1) {
@@ -74,6 +128,12 @@ function edgePoints(face: number, start: [number, number], end: [number, number]
     points.push(faceUvToLatLng(face, u, v));
   }
   return points;
+}
+
+function edgeSampleCount(level: number) {
+  // Low-level S2 edges cover large arcs and need finer sampling to look smooth
+  // when MapLibre bends them over the globe. Small high-level cells need less.
+  return level <= 3 ? 24 : level <= 5 ? 12 : 4;
 }
 
 export function makeLevelFeatures(level: number): LineFeature[] {
@@ -95,16 +155,20 @@ function cellFeature(level: number, face: number, i: number, j: number, cellsPer
   const u1 = stToUv((i + 1) / cellsPerEdge);
   const v0 = stToUv(j / cellsPerEdge);
   const v1 = stToUv((j + 1) / cellsPerEdge);
+  const samples = edgeSampleCount(level);
   const sides = [
-    edgePoints(face, [u0, v0], [u1, v0]),
-    edgePoints(face, [u1, v0], [u1, v1]),
-    edgePoints(face, [u1, v1], [u0, v1]),
-    edgePoints(face, [u0, v1], [u0, v0]),
+    edgePoints(face, [u0, v0], [u1, v0], samples),
+    edgePoints(face, [u1, v0], [u1, v1], samples),
+    edgePoints(face, [u1, v1], [u0, v1], samples),
+    edgePoints(face, [u0, v1], [u0, v0], samples),
   ];
   return {
     type: 'Feature',
     properties: { level },
-    geometry: { type: 'MultiLineString', coordinates: sides.flatMap(splitAtDateline) },
+    geometry: {
+      type: 'MultiLineString',
+      coordinates: sides.flatMap((side) => clipAtMercatorLatitude(side).flatMap(splitAtDateline)),
+    },
   };
 }
 
@@ -150,11 +214,12 @@ export function selectedCellFeature(lat: number, lng: number, level: number): Po
   const u1 = stToUv((i + 1) / cellsPerEdge);
   const v0 = stToUv(j / cellsPerEdge);
   const v1 = stToUv((j + 1) / cellsPerEdge);
+  const samples = edgeSampleCount(level);
   const edges = [
-    edgePoints(face, [u0, v0], [u1, v0]),
-    edgePoints(face, [u1, v0], [u1, v1]),
-    edgePoints(face, [u1, v1], [u0, v1]),
-    edgePoints(face, [u0, v1], [u0, v0]),
+    edgePoints(face, [u0, v0], [u1, v0], samples),
+    edgePoints(face, [u1, v0], [u1, v1], samples),
+    edgePoints(face, [u1, v1], [u0, v1], samples),
+    edgePoints(face, [u0, v1], [u0, v0], samples),
   ];
   const ring = edges.flatMap((edge) => edge.slice(0, -1)).map(([edgeLng, edgeLat]) => [
     edgeLng + 360 * Math.round((lng - edgeLng) / 360),

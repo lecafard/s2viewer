@@ -7,6 +7,7 @@
   let mapElement: HTMLDivElement;
   let map: MapLibreMap | undefined;
   let basemap = 'light';
+  let projection: 'mercator' | 'globe' = 'mercator';
   let mobilePanelOpen = false;
   let mobileSearchOpen = false;
   let searchQuery = '';
@@ -349,6 +350,11 @@
     map?.setStyle(styleUrl());
   }
 
+  function toggleProjection() {
+    projection = projection === 'mercator' ? 'globe' : 'mercator';
+    map?.setProjection({ type: projection });
+  }
+
   function setZoom(next: number) {
     map?.easeTo({ zoom: Math.max(0, Math.min(20, next)), duration: 450 });
   }
@@ -379,6 +385,7 @@
     instance.on('load', addGridLayers);
     instance.on('style.load', () => {
       addGridLayers();
+      instance.setProjection({ type: projection });
     });
     instance.on('zoom', () => {
       if (!map) return;
@@ -415,12 +422,24 @@
   <title>S2 Grid Viewer</title>
 </svelte:head>
 
-<main class="app-shell">
+<main class="app-shell" class:dark-mode={basemap === 'dark'}>
   <div class="map-canvas" bind:this={mapElement}></div>
   <div class="map-wash"></div>
 
   <header class="topbar">
-    <div class="brand-name">S2 Grid Viewer</div>
+    <div class="brand-group">
+      <div class="brand-name">S2 Grid Viewer</div>
+      <a
+        class="icon-button repo-link"
+        href="https://github.com/lecafard/s2viewer"
+        target="_blank"
+        rel="noreferrer"
+        aria-label="S2 Viewer on GitHub"
+        title="S2 Viewer on GitHub"
+      >
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 .9a11.1 11.1 0 0 0-3.51 21.63c.55.1.76-.24.76-.54v-2.1c-3.1.67-3.75-1.32-3.75-1.32-.5-1.29-1.24-1.63-1.24-1.63-1.01-.69.08-.68.08-.68 1.12.08 1.71 1.15 1.71 1.15 1 .1.76 2.01 3.34 1.43.1-.72.39-1.21.7-1.49-2.48-.28-5.09-1.24-5.09-5.52 0-1.22.44-2.22 1.15-3-.12-.28-.5-1.42.11-2.96 0 0 .94-.3 3.05 1.15a10.6 10.6 0 0 1 5.55 0c2.12-1.44 3.05-1.15 3.05-1.15.61 1.54.23 2.68.11 2.96.72.78 1.15 1.78 1.15 3 0 4.29-2.61 5.24-5.1 5.51.4.35.75 1.03.75 2.08v3.08c0 .3.2.65.77.54A11.1 11.1 0 0 0 12 .9Z"/></svg>
+      </a>
+    </div>
     <form
       id="location-search"
       class="location-search"
@@ -468,6 +487,16 @@
         {:else}
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.2 15.8A8.6 8.6 0 0 1 8.2 3.8 8.8 8.8 0 1 0 20.2 15.8Z" /></svg>
         {/if}
+      </button>
+      <button
+        class="icon-button projection-button"
+        class:projection-active={projection === 'globe'}
+        onclick={toggleProjection}
+        aria-label={projection === 'globe' ? 'Switch to flat map' : 'Switch to globe'}
+        aria-pressed={projection === 'globe'}
+        title={projection === 'globe' ? 'Switch to flat map' : 'Switch to globe'}
+      >
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18" /></svg>
       </button>
     </div>
   </header>
